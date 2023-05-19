@@ -1,0 +1,60 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2709
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 ArialMT;}
+{\colortbl;\red255\green255\blue255;\red26\green26\blue26;\red255\green255\blue255;}
+{\*\expandedcolortbl;;\cssrgb\c13333\c13333\c13333;\cssrgb\c100000\c100000\c100000;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww15040\viewh8400\viewkind0
+\deftab720
+\pard\pardeftab720\partightenfactor0
+
+\f0\fs20 \cf2 \cb3 \expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 Here is a very rare FM mistake, only observed in this experiment. Here are the relevant records:\
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb1 \
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb3 cogent-ace r3@bmm 98 2662 2662 191 700094 700094 700094 700519 LIMIT SELL 1 595 2017-10-06T08:29:11.513 2017-10-06T08:32:55.662\cb1 \
+\cb3 cogent-ace r3@bmm 98 2662 2662 191 700095 700095 700095 700094 LIMIT BUY 1 595 2017-10-06T08:29:11.526 2017-10-06T08:29:11.560\cb1 \
+\cb3 cogent-ace r3@bmm 98 2662 2662 191 700096 700094 700094 700095 LIMIT SELL 1 595 2017-10-06T08:29:11.537 2017-10-06T08:29:11.537\cb1 \
+\cb3 ...\
+cogent-ace r8@bmm 98 2662 2662 191 700518 700518 700518 0 LIMIT BUY 1 645 2017-10-06T08:32:55.626 2017-10-06T08:32:55.662\cb1 \
+\cb3 cogent-ace r8@bmm 98 2662 2662 191 700519 700518 700518 700094 LIMIT BUY 1 595 2017-10-06T08:32:55.640 2017-10-06T08:32:55.662\cb1 \
+\
+\cb3 My original program would\'a0not get this right.\'a0\
+1. I would count 2 transactions: 700095 and 700519 (since consumer# < supplier#); that in itself does not harm\
+2. I would keep the 70094 order "standing" till the end\
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb1 \
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb3 But (2) is wrong since there is a later buy market order that crosses a higher sell order (so 595 was not "standing"):\
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb1 \
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb3 cogent-ace r8@bmm 98 2662 2662 191 700100 700100 700100 0 LIMIT BUY 1 645 2017-10-06T08:29:13.733 2017-10-06T08:29:13.808\cb1 \
+\cb3 cogent-ace r8@bmm 98 2662 2662 191 700101 700100 700100 700070 LIMIT BUY 1 610 2017-10-06T08:29:13.748 2017-10-06T08:29:13.808\cb1 \
+\
+\cb3 ... and immediately after this, there is a buy order that traded only when a subsequent sell order at 595 comes in:\
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb1 \
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb3 cogent-ace r3@bmm 98 2662 2662 191 700102 700102 700102 700106 LIMIT BUY 1 595 2017-10-06T08:29:14.025 2017-10-06T08:29:14.868\cb1 \
+\cb3 ...\cb1 \
+\cb3 cogent-ace r4@bmm 98 2662 2662 191 700105 700105 700105 0 LIMIT SELL 1 505 2017-10-06T08:29:14.828 2017-10-06T08:29:14.867\cb1 \
+\cb3 cogent-ace r4@bmm 98 2662 2662 191 700106 700105 700105 700102 LIMIT SELL 1 595 2017-10-06T08:29:14.846 2017-10-06T08:29:14.868\cb1 \
+\
+\cb3 It's clear that the 595 sell order was not available after record 70095, and UNTIL the very end: order 700502, a buy order at 610, was never executed! (At that time, the best sell was 655 I think).\'a0\
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb1 \
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb3 cogent-ace r7@bmm 98 2662 2662 191 700502 700502 700502 NULL LIMIT BUY 1 610 2017-10-06T08:32:47.554 2017-10-06T08:32:47.583\cb1 \
+\
+\cb3 Look at the lastmodifiedDate of 70095:\'a02017-10-06T08:32:55.662\
+This refers to record when it was "consumed," 700519 (with entry date\'a02017-10-06T08:32:55.640).\'a0\
+So, dates are consistent with pointers to consumer IDs.\'a0\
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb1 \
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb3 This is clearly a mistake and it explains negative\'a0b/a spreads (about 10' after the start of the experiment). \
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb1 \
+\pard\pardeftab720\partightenfactor0
+\cf2 \cb3 How to avoid this? I changed my program, from: I search for the first occurence, as record ID, of the consumer ID of the order record, and then consider it not to be standing anymore; to: search for the first occurence, as consumer ID, of the record ID of the original order record.\
+}

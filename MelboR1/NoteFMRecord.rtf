@@ -1,0 +1,28 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2709
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\froman\fcharset0 Times-Roman;\f1\froman\fcharset0 Times-Bold;}
+{\colortbl;\red255\green255\blue255;\red0\green0\blue0;}
+{\*\expandedcolortbl;;\cssrgb\c0\c0\c0;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\deftab720
+\pard\pardeftab720\partightenfactor0
+
+\f0\fs24 \cf0 \expnd0\expndtw0\kerning0
+Here is an extremely rare FM mistake which my programs that compute b/ask spreads cannot deal with. This is in the first experiment. There are none of this type in later experiments.\
+\
+cogent-ace r7@bmm 81 907 907 166 169626 169626 169626 169631 LIMIT SELL 1 205 2017-08-22T06:29:17.432 2017-08-22T06:29:28.321\
+cogent-ace r1@bmm 81 907 907 166 169627 169627 169627 169629 LIMIT BUY 1 245 2017-08-22T06:29:17.448 2017-08-22T06:29:26.449\
+cogent-ace r2@bmm 81 907 907 166 169628 169628 169628 0 LIMIT SELL 1 210 2017-08-22T06:29:26.381 2017-08-22T06:29:26.441\
+cogent-ace r2@bmm 81 907 907 166 169629 169628 169628 169627 LIMIT SELL 1 245 2017-08-22T06:29:26.424 2017-08-22T06:29:26.450\
+cogent-ace r1@bmm 81 907 907 166 169630 169630 169630 0 LIMIT BUY 1 245 2017-08-22T06:29:28.264 2017-08-22T06:29:28.321\
+cogent-ace r1@bmm 81 907 907 166 169631 169630 169630 169626 LIMIT BUY 1 205 2017-08-22T06:29:28.314 2017-08-22T06:29:28.321\
+\
+Sell comes in at 205, followed by a buy at 245 only 16ms later, which should have traded. But the buy becomes a standing\'a0order. And the next record is a sell at 210 that comes in 9s later and trades against the buy. 3s later another buy comes in and that one trades against the first sell. So, for 9s, there is a negative b-a spread of 40. The only way to avoid this is to re-order things and put the first sell (at 205) after the second sell (at 210).\'a0\
+\
+I solved this by assigning time to first sell that\'92s after second sell:\
+\
+cogent-ace r7@bmm 81 907 907 166 169626 169626 169626 169631 LIMIT SELL 1 205 
+\f1\b 2017-08-22T06:29:27.432
+\f0\b0  2017-08-22T06:29:28.321\
+\
+Trades remain the same.\
+}

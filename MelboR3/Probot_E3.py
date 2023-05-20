@@ -530,26 +530,43 @@ for s in wb.sheets():
 
 # Total orders submitted by each player
 order_each_player = []
-
+order_list_each_player = []
+temp = 0
 for i in range(1, Nplayer + 1):
-    temp = 0
     for j in range(len(market_book)):
+        tempOrder = []
         if market_book[j][1] != '':
             if market_book[j][1][0] == 'r':  # All (email) IDs for players start with "r"
                 a = int(market_book[j][1][1]) == i  # Is order initiated by player i?
                 b = market_book[j][6] == market_book[j][7] == market_book[j][8]  # Is this the original order record?
-                if a and b:
+                c = market_book[j][10] == 'LIMIT'
+                if a and b and c:
                     temp += 1
+                    tempOrder.append(market_book[j][6])
+                    tempOrder.append(i - 1)
+                    tempOrder.append('Manual')  # Temporarily assigned as manual, to be changed later
+                    tempOrder.append(-1)  # Period placeholder, to be identified later
+                    order_list_each_player.append(tempOrder)
     order_each_player.append(temp)
+    order_list_each_player_length = temp
 
 order_each_player  # [100, 237, 56, 88, 261, 123, 62, 178]
+order_list_each_player
 
 # total orders submitted by all players each period (for market 'market'); note that period is called "session" here!
 
 total_order_each_period = []
+order_ID_each_period = []
+order_price_each_period = []
+order_type_each_period = []
+order_time_each_period = []
 
 for session in range(begin_session, end_session + 1):
     temp = 0
+    tempIDs = []
+    tempPrices = []
+    tempTypes = []
+    tempTimes = []
     for j in range(1, len(market_book)):
         if market_book[j][13] != '':
             if market_book[j][6].isnumeric():
@@ -559,7 +576,21 @@ for session in range(begin_session, end_session + 1):
                 d = market_book[j][5] == market
                 if a and b and c:
                     temp += 1
+                    tempIDs.append(market_book[j][6])
+                    tempPrices.append(market_book[j][13])
+                    tempTypes.append(market_book[j][11])
+                    tempB = market_book[j][14].split("T")[1]
+                    tempB = tempB.split(".")[0]
+                    temps = tempB.split(":")
+                    if temps[0] == '05': temps[0] = '15'
+                    if temps[0] == '06': temps[0] = '16'
+                    tempB = ':'.join(temps)
+                    tempTimes.append(tempB)
+    order_ID_each_period.append(tempIDs)
+    order_price_each_period.append(tempPrices)
+    order_type_each_period.append(tempTypes)
     total_order_each_period.append(temp)
+    order_time_each_period.append(tempTimes)
 
 total_order_each_period  # [123, 106, 76, 89, 94, 68, 55, 89, 72, 45, 33, 62, 105, 36, 52]
 
@@ -722,38 +753,61 @@ for i in range(15):
     robot_orderprice_each_period.append(period_orders_price)
     robot_ordertype_each_period.append(period_orders_type)
 
-# Now go over all trades in a period and identify whether the record included a SID or CID that features in robot_orderID_each-period
 
-total_robot_trade_each_period = []
-robot_trade_FM_ID_each_period = []
-robot_trade_FM_CID_each_period = []
+# Now determine orderIDs of ROBOTS
+# Go over all orders in a period (FM) and match robot log data
+
+robot_order_ID_each_period = []
 
 for session in range(begin_session, end_session + 1):
     i = session - begin_session
     temp = 0
-    robot_trade_FM_ID = []
-    robot_trade_FM_CID = []
-    for j in range(len(trade_orderID_each_period[i])):
-        # determine whether record has corresponding SID or CID among robot orders in same period
-        # If so, a robot was involved (avoid double counting though!)
+    robot_order_FM_ID = []
+    for j in range(len(order_ID_each_period[i])):
+        # determine whether record
         vlag = 0
         for k in range(len(robot_ordertime_each_period[i])):
             keyRL = robot_ordertime_each_period[i][k].split(":")
             keyRL = ''.join(keyRL)
-            keyFM = trade_orderID_each_period[i][j][5].split(":")
+            keyFM = order_time_each_period[i][j].split(":")
             keyFM = ''.join(keyFM)
             a = int(keyRL) >= int(keyFM)  # Is time on log after time in FM?
-            b = int(robot_orderprice_each_period[i][k]) == int(trade_orderID_each_period[i][j][3])  # Is order price the same?
-            c = robot_ordertype_each_period[i][k] == trade_orderID_each_period[i][j][4]  # Is order type the same?
+            b = int(robot_orderprice_each_period[i][k]) == int(order_price_each_period[i][j])  # Is order price the same?
+            c = robot_ordertype_each_period[i][k] == order_type_each_period[i][j]  # Is order type the same?
             if a and b and c and vlag == 0:
                 temp += 1
                 vlag = 1
-                robot_trade_FM_ID.append(trade_orderID_each_period[i][j][0])
-                robot_trade_FM_CID.append(trade_orderID_each_period[i][j][2])
+                robot_order_FM_ID.append(order_ID_each_period[i][j])
 
-    total_robot_trade_each_period.append(temp)
-    robot_trade_FM_ID_each_period.append(robot_trade_FM_ID)
-    robot_trade_FM_CID_each_period.append(robot_trade_FM_CID)
+    robot_order_ID_each_period.append(robot_order_FM_ID)
+
+# Now go over all trades in a period and identify whether the record included a SID or CID that features in robot_orderID_each-period
+# Also determine whether trade is among robots, not with humans
+
+total_robot_trade_each_period = []
+total_robotrobot_trade_each_period = []
+
+for session in range(begin_session, end_session + 1):
+    i = session - begin_session
+    temp1 = 0
+    temp2 = 0
+    robot_trade_FM_ID = []
+    robot_trade_FM_CID = []
+    for k in range(total_trade_each_period[i]):
+        # determine whether record has corresponding SID or CID among robot orders in same period
+        # If so, a robot was involved (avoid double counting though!)
+        vlag = 0
+        for j in range(len(robot_order_ID_each_period[i])):
+            a = int(robot_order_ID_each_period[i][j]) == trade_orderID_each_period[i][k][2]  # CID
+            b = int(robot_order_ID_each_period[i][j]) == trade_orderID_each_period[i][k][1]  # SID
+            if (a or b) and vlag == 1:
+                temp2 +=1
+            if (a or b) and vlag == 0:
+                temp1 += 1
+                vlag = 1
+
+    total_robot_trade_each_period.append(temp1)
+    total_robotrobot_trade_each_period.append(temp2)
 
 sum(total_robot_trade_each_period)  # Total number of trades where at least one side is a robot
 
@@ -764,25 +818,24 @@ plt.ylabel("number of trades")
 plt.xlabel("period number")
 plt.grid()
 
-#### What fraction of these robot trades is with humans?
+## Now per player: period, orders submitted, orders by robot; update order_list_each_player
 
-total_robotrobot_trade_each_period = []
-
-for session in range(begin_session, end_session + 1):
+for session in range(begin_session, end_session+1):
     i = session - begin_session
-    temp = 0
-    for j in range(len(robot_trade_FM_ID_each_period[i])):
-        # determine whether record has corresponding SID or CID among robot orders in same period
-        # If so, a robot was involved (avoid double counting though!)
-        a = 0
-        b = 0
-        for k in range(len(robot_trade_FM_CID_each_period[i])):
-            if robot_trade_FM_CID_each_period[i][k] == robot_trade_FM_ID_each_period[i][j]:
-                temp += 1
-
-    total_robotrobot_trade_each_period.append(temp)
+    for j in range(len(robot_order_ID_each_period[i])):
+        vlag = 0
+        for k in range(order_list_each_player_length):
+            if int(robot_order_ID_each_period[i][j]) == int(order_list_each_player[k][0]):
+                order_list_each_player[k][2] = 'ROBOT'
+                order_list_each_player[k][3] = i
+                vlag = 1
+        if vlag == 0:
+            print('robot order not assigned to player')
+            print([i, j])
 
 #### Save all robot use data
+
+# Per period
 
 df = pd.DataFrame({
     "total_order_each_period": total_order_each_period,
@@ -793,3 +846,11 @@ df = pd.DataFrame({
 }
 )
 df.to_csv('robotordertrade_per_period.csv')
+
+
+# Per PLAYER
+Details = ['Order_ID', 'Participant','Type','Period_IF_Robot']
+with open('order_list_each_player.csv', 'w') as f:
+    write = csv.writer(f)
+    write.writerow(Details)
+    write.writerows(order_list_each_player)

@@ -529,19 +529,28 @@ for s in wb.sheets():
 
 # Total orders submitted by each player
 order_each_player = []
-
+order_list_each_player = []
+temp = 0
 for i in range(1, Nplayer + 1):
-    temp = 0
     for j in range(len(market_book)):
+        tempOrder = []
         if market_book[j][1] != '':
             if market_book[j][1][0] == 'r':  # All (email) IDs for players start with "r"
                 a = int(market_book[j][1][1]) == i  # Is order initiated by player i?
                 b = market_book[j][6] == market_book[j][7] == market_book[j][8]  # Is this the original order record?
-                if a and b:
+                c = market_book[j][10] == 'LIMIT'
+                if a and b and c:
                     temp += 1
+                    tempOrder.append(market_book[j][6])
+                    tempOrder.append(i - 1)
+                    tempOrder.append('Manual')  # Temporarily assigned as manual, to be changed later
+                    tempOrder.append(-1)  # Period placeholder, to be identified later
+                    order_list_each_player.append(tempOrder)
     order_each_player.append(temp)
+    order_list_each_player_length = temp
 
 order_each_player  # [100, 237, 56, 88, 261, 123, 62, 178]
+order_list_each_player
 
 # total orders submitted by all players each period (for market 'market'); note that period is called "session" here!
 
@@ -753,8 +762,24 @@ for session in range(begin_session, end_session + 1):
 
     total_robotrobot_trade_each_period.append(temp)
 
+## Now per player: period, orders submitted, orders by robot; update order_list_each_player
+
+for session in range(begin_session, end_session+1):
+    i = session - begin_session
+    for j in range(len(robot_orderID_each_period[i])):
+        vlag = 0
+        for k in range(order_list_each_player_length-1):
+            if int(robot_orderID_each_period[i][j]) == int(order_list_each_player[k][0]):
+                order_list_each_player[k][2] = 'ROBOT'
+                order_list_each_player[k][3] = i
+                vlag = 1
+        if vlag == 0:
+            print('robot order not assigned to player')
+            print([i, j])
+
 #### Save all robot use data
 
+#  Per PERIOD
 df = pd.DataFrame({
     "total_order_each_period": total_order_each_period,
     "total_trade_each_period": total_trade_each_period,
@@ -764,3 +789,10 @@ df = pd.DataFrame({
 }
 )
 df.to_csv('robotordertrade_per_period.csv')
+
+# Per PLAYER
+Details = ['Order_ID', 'Participant','Type','Period_IF_Robot']
+with open('order_list_each_player.csv', 'w') as f:
+    write = csv.writer(f)
+    write.writerow(Details)
+    write.writerows(order_list_each_player)

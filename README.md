@@ -9,3 +9,16 @@ There are two main python programs that read the two main types of file:
 Output csv files: title should make clear what the content is; if not, see python programs.
 
 Note that the "holdings" calculations in the output15*xls files are wrong. Use "Earnings.xlsx" for final earnings.
+
+**************************************************
+
+Utah* are the 9 sessions ran in the paper revision process. They are organized by coauthors from the University of Utah but the subjects are recruited by coauthers from Monash University. 
+
+Session 1, 3, 9: No commitment, no panelty
+Session 2, 4, 8: Commitment, no panelty
+Session 5, 6, 7: Commitment, panelty
+
+Files included in each folders are:
+- Holdings_R*: initial and end holdings of each period per subject
+- Orders_R8: orders happened in each period per subject
+- Setup_Reupload*: holdings with cash updated by adding the random dividends of each period

@@ -1,0 +1,2231 @@
+---
+title: "Automated experiment running"
+output:
+  html_document:
+    df_print: paged
+---
+This notebook contains all information for running a full session, including practice sessions. Chunks must be run one by one. Here is a numbered index of what is performed in each chunk:
+
+1. Load packages, set parameters for calculations and provide login info for adhocmarkets.
+2. Parameters for manual trading, including info for adhocmarkets manual session and start the practice round for manual trading.
+3. Stop the practice round and process data.
+4. Run the two manual rounds (data will be automatically processed and uploaded to the shared Excel files).
+5. Parameters for the algo rounds and start algo practice round.
+6. Stop algo practice round and process data.
+7. Run algo real rounds, collect and process data.
+8. Generate payoff with internal or external draws vector.
+
+There is a first chunk (0) to be run for setup of the entire notebook. It can be run before the experiment starts
+
+
+
+### Chunk 0 - session parameters / Initialization
+Chunk 1 should be run once we have the signup file
+
+Parameters to set:
+
+- Login information: "uleef|uleef1@gmail.com", "ExpAccount2021"  (already set)
+- Number of the manual treatment marketplace (1109), and the algos treatment marketplace (1096)
+- Duration of manual rounds (60 seconds for practice, 10 minutes for real)
+- Duration of pause between rounds to give feedback (60 second for practice, 120 seconds for real)
+- Duration of algo rounds (120 seconds for practice, 10 minutes for real)
+- If we pause inside a round (not currently enabled), the length in seconds of the pause is 30, 4 pauses
+
+```{r Chunk 0}
+# Initialization
+# Packages
+library(plyr)
+library(dplyr)
+library(xlsx)
+library(httr)
+library(tcltk)
+library(plyr)
+
+
+# ------------------------- UPDATE THE PARAMETERS BEFORE RUNNING -----------------------------
+showup<- 10
+conversion <- 10 # 10 for USD and 6 for AUD
+marketplaceNo<- '1201'
+
+# PARAMETERS FOR CONTROLLING ADHOCMARKETS
+# ManD<- 30 # Duration, in seconds, of manual rounds 600
+AlgD<- 180 # Duration, in seconds, of algo rounds 180
+PauseD<- 10 # Duration, in seconds, of pauses, if any 30
+Npause<- 0 # How many pauses in the round
+InterD<- 10 # Time between two rounds(for feedback, etc. Counts after all calculations performed) 30
+# payshowD<- 5 # Time to display previous round payoff 15 seconds is fine
+# From above parameters, determine actual duration in between pauses:
+AlgEffD<- AlgD/(Npause+1)
+
+login<- authenticate("uleef|uleef1@gmail.com", "ExpAccount2021") 
+#-------------------------------------------------------------------------------------
+
+
+# LOAD SIGNUP INFO: MATCH EMAILS WITH NAMES
+lns <- readLines(paste0('Setup_Practice_',marketplaceNo,'.csv'))
+gg<- which(grepl('# holdings', lns))
+hlns<- lns[(gg[1]+1):(gg[2]-1)]
+holds<- read.table(text = hlns, sep = ',', header = TRUE)
+holds<- select(holds, email)
+qsignup<- read.xlsx('signup.xlsx', sheetIndex = 1)
+qsignup<- qsignup[!(is.na(qsignup$email)),]
+signup<- full_join(qsignup, holds, by = 'email')
+# Create even-odd indicator
+signup$number<- 0
+auxeo<- strsplit(signup$email, "")
+for(i in 1:(length(auxeo))){
+  indi<- grep("[0-9]", auxeo[[i]])
+  signup$number[i]<- as.numeric(ifelse(length(indi)>0, substr(signup$email[i], min(indi), max(indi)), -10))
+}
+signup<- mutate(signup, evodd = ifelse(grepl('uleef', email) == TRUE, -10, ifelse((number %% 2) == 0, "even", "odd")))
+btsubs<- sum(is.na(signup$Name) == FALSE)
+
+# Create dataframe to keep track of effective round duration and final waiting times
+ttracker<- data.frame(elapsed = numeric(15), pelapsed = numeric(15), take5 = numeric(15), xe = numeric(15))
+
+# hero is the basic path for our market - only market number must change as we run different sessions
+hero<- paste0("https://fm-data.herokuapp.com/api/marketplaces/", marketplaceNo)
+
+#Make sure the marketplace is closed before we start the trading
+yy<- PATCH(paste0(hero,'/close'), config = login)
+
+# marketin is the path to the setup file relevant for the manual sessions
+# marketin<- "Setup_Practice.csv"
+marketin <- paste0('Setup_Practice_',marketplaceNo,'.csv')
+
+# Load the setup file
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+```
+
+
+### Chunk 1: start the practice round 
+We load initial holdings to be sure all is kosher at the beginning of the manual rounds. Must do this only once.
+
+```{r Chunk 1}
+
+# Start the round
+xx<- PATCH(paste0(hero, '/open'), config = login)
+```
+
+**IMPORTANT:** Time should be counted manually until we wish to stop it. At that point, run the next chunk to stop practice and process data.
+
+
+### Chunk 2: stop the practice round
+```{r Chunk 2}
+# STOP the practice round
+yy<- PATCH(paste0(hero,'/close'), config = login)
+```
+
+
+
+### Repreat Chunk 1 & 2 if multiple practice rounds are needed
+
+### Chunk 3: Check presence & download holdings/orders from practice round
+``` {r Chunk 3}
+# GET DATA
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+# GET holdings data
+qgg<- grep('# holdings', polk[[1]]) 
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+# GET orders data
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+write.csv(holdtbl, 'Holdings_Practice.csv', row.names = FALSE)
+write.csv(ordtbl, 'Orders_Practice.csv', row.names = FALSE)
+
+#--------------------------------------------------
+library(svDialogs)
+div <- dlgInput('Please generate a random number dividend: ')$res
+div <- as.numeric(div) * 100
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock * 0
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+# Replace the TRUE by FALSE
+tvec<- rep("FALSE", dim(holdtbl)[1])
+holdtbl[ , grep('buy', names(holdtbl))]<- tvec
+holdtbl[ , grep('sell', names(holdtbl))]<- tvec
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove('Setup_Reupload_Practice.csv')
+file.copy('finalin_empty.csv', 'Setup_Reupload_Practice.csv')
+write.table(holdtbl, 'Setup_Reupload_Practice.csv', sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), 'Setup_Reupload_Practice.csv', append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+
+# Load the updated setup file
+marketin<- marketin <- paste0('Setup_Reupload_Practice.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+
+
+### IMPORTANT: CHECK WHO'S TRULY THERE - COMPARE WITH SIGNUP LIST ###
+Presencetbl<- left_join(holdtbl, signup, by = 'email')
+Presencetbl<- select(Presencetbl, email, owner, name, cash, Name, number, evodd)
+ordsub<- unique(ordtbl$email)
+Presencetbl<- mutate(Presencetbl, su.there = ifelse(is.na(Name), 0, 1), ord.there = ifelse(email %in% ordsub, 1, 0))
+Presencetbl<- mutate(Presencetbl, Errors = ifelse(su.there - ord.there == 1, 'ONLY SIGNUP',
+                                                  ifelse(su.there - ord.there == -1, 'ONLY ORDERS', 'OK')))
+write.xlsx(Presencetbl, 'Presence.xlsx', row.names = FALSE)
+select(Presencetbl, email, Name, evodd, su.there, ord.there, Errors)
+```
+```{r Chunk open}
+ # open market to display payoff for practice round
+ xx<- PATCH(paste0(hero, '/open'), config = login)
+```
+
+```{r Chunk close}
+ xx<- PATCH(paste0(hero, '/close'), config = login)
+
+# Initialized practice round holdings
+# marketin<- "Setup_Practice.csv"
+marketin <- paste0('Setup_Practice_',marketplaceNo,'.csv')
+
+# Load the setup file
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+```
+
+
+#### BODY OF EXPERIMENT ####
+### Chunk 4: Round 1 of the formal robotic trading
+
+```{r Chunk4}
+
+### ROUND 1 ###
+
+# Load the setup file for formal sessions
+marketin <- paste0('Setup_Initial_',marketplaceNo,'.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+# Start round, record starting time
+Round<- 1
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+  
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD) 
+require(tcltk)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+
+
+# Chunk 5: Round 2 of the formal robotic trading
+
+```{r Chunk5}
+
+Round<- 2
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+# Chunk 6: Round 3 of the formal robotic trading
+
+```{r Chunk6}
+
+Round<- 3
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+```
+
+
+# Chunk 7: Round 4 of the formal robotic trading
+
+```{r Chunk7}
+
+Round<- 4
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+# Chunk 8: Round 5 of the formal robotic trading
+
+```{r Chunk 8}
+
+Round<- 5
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+
+# Chunk 9: Round 6 of the formal robotic trading
+
+```{r Chunk 9}
+
+Round<- 6
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+
+
+# Chunk 10: Round 7 of the formal robotic trading
+
+```{r Chunk 10}
+
+Round<- 7
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+
+
+# Chunk 11: Round 8 of the formal robotic trading
+
+```{r Chunk 11}
+
+Round<- 8
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+
+# Chunk 12: Round 9 of the formal robotic trading
+
+```{r Chunk 12}
+
+Round<- 9
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+
+
+# Chunk 13: Round 10 of the formal robotic trading
+
+```{r Chunk 13}
+
+Round<- 10
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+# Chunk 14: Round 11 of the formal robotic trading
+
+```{r Chunk 14}
+
+Round<- 11
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+
+# Chunk 15: Round 12 of the formal robotic trading
+
+```{r Chunk 15}
+
+Round<- 12
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+```
+
+
+
+# Chunk 16: Round 13 of the formal robotic trading
+
+```{r Chunk 16}
+
+Round<- 13
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+
+# Chunk 17: Round 14 of the formal robotic trading
+
+```{r Chunk 17}
+
+Round<- 14
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1] 
+end_cash <- holdtbl[['cash']]
+re_ini_stock <- end_stock
+re_ini_cash <- end_cash + end_stock * div 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- paste0('Setup_Reupload', Round, '.csv')
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+#-------------------------------------------------------------------------------
+
+# PAUSE!
+Sys.sleep(InterD)
+msgBox <- tkmessageBox(title = "Reminder", message = "BREAK ENDS!", icon = "info", type = "ok")
+
+```
+
+
+# Chunk 18: Round 15 of the formal robotic trading
+
+```{r Chunk 18}
+
+Round<- 15
+np<- 0
+xx<- PATCH(paste0(hero, '/open'), config = login)
+start.time<- Sys.time()
+ptime<- start.time
+Mstatus<- 'OPEN'
+
+# Check market status regularly
+while(Mstatus == 'OPEN'){
+  aux<- GET(paste0(hero, '/currentSession'), config = login)
+  slist<- strsplit(content(aux, 'text', encoding = "UTF-8"), '\n')
+  sentry<- slist[[1]][grep('state', slist[[1]])]
+  Mstatus<- trimws(gsub('state', '', gsub("[^[:alnum:]]", " ", sentry)))
+  if(Mstatus == 'OPEN'){
+    elapsed<- difftime(Sys.time(), start.time, units = 'secs')
+    pelapsed<- difftime(Sys.time(), ptime, units = 'secs')
+    if(pelapsed >= AlgEffD){
+      if(elapsed>= (AlgD + np*PauseD)){
+        yy<- PATCH(paste0(hero,'/close'), config = login)
+        Mstatus = 'CLOSED'
+      }else{
+        yy<- PATCH(paste0(hero,'/pause'), config = login)
+        np<- np+1
+        Sys.sleep(PauseD)
+        xx<- PATCH(paste0(hero, '/open'), config = login)
+        ptime<- Sys.time()
+      }
+    }
+  }
+  take5<- min(10, max(0, AlgEffD- pelapsed))
+  Sys.sleep(take5)
+}
+ttracker$elapsed[Round]<- elapsed
+ttracker$pelapsed[Round]<- pelapsed
+ttracker$take5[Round]<- take5
+
+# Get data and process
+zz<- GET(paste0(hero,"/holdings/downloads"), config = login)
+yolk<- content(zz, 'text')
+polk<- strsplit(yolk, '\n')
+qgg<- grep('# holdings', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+holdtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# For bots, do the same with orders - get last occurrence, parse robot types and spreads + manual trades
+qgg<- grep('# orders', polk[[1]])
+gg<- sort(qgg)
+bot<- gg[length(gg)-1]+1
+top<- gg[length(gg)]-1
+pretab<- rbind(polk[[1]][bot:top])
+ordtbl<- read.table(text = pretab, sep = ',', header = TRUE)
+
+
+# Be sure to get correct client description for each agent:
+unord<- ordtbl[ordtbl$order == ordtbl$original,]
+bots<- distinct(unord, email, clientDescription)
+bots$type<- substr(bots$clientDescription, 1, 5)
+bbots<- bots[bots$type != 'fm-ui',]
+if(dim(bbots)[1]>0){
+  bbots<- left_join(bbots, signup[, c('email', 'evodd')], by = 'email')
+  counter<- bbots %>% group_by(evodd) %>% summarise(tcount = sum(type == 'taker'), mcount = sum(type == 'maker'))
+}else{
+  counter<- as.data.frame(matrix(nrow = 0, ncol = 0))
+}
+
+
+write.csv(holdtbl, paste0('Holdings_R', Round, '.csv'), row.names = FALSE)
+write.csv(ordtbl, paste0('Orders_R', Round, '.csv'), row.names = FALSE)
+
+
+#--------------------------------- Calculating the new holdings ----------------------
+
+library(svDialogs)
+div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+
+while (div_scenario !=1 & div_scenario !=2 & div_scenario !=3 & div_scenario !=4) {
+  div_scenario <- dlgInput('Please generate a random integer from 1-4: ')$res
+}
+
+if (div_scenario == 1) {
+  div = 0
+} else if (div_scenario == 2) {
+  div = 25
+} else if (div_scenario == 3) {
+  div = 50
+} else if (div_scenario == 4) {
+  div = 125
+}
+
+
+s_name = names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]][1]
+s_name = paste(s_name, "__initial", sep="")
+end_stock <- holdtbl[names(holdtbl)[grep("STOCK_", names(holdtbl))[1:2]]][,1]  
+end_cash <- holdtbl[['cash']]
+
+re_ini_stock <- end_stock * 0 # set them to 0 as they expire after 15 periods
+re_ini_cash <- (end_cash + end_stock * div)/conversion + showup * 100
+re_ini_cash <- round_any(re_ini_cash, 100, f = ceiling) 
+
+holdtbl[['cash__initial']] <- re_ini_cash
+holdtbl[[s_name]] <- re_ini_stock
+
+
+#-----------------------
+# This whole block of code is just to add the label '# holdings -- begin' & '# holdings -- end' to
+# the updated holding table, save it as CSV file and upload it to Ad Hoc Markets
+
+file.remove(paste0('Setup_Reupload', Round, '.csv'))
+file.copy('finalin_empty.csv', paste0('Setup_Reupload', Round, '.csv'))
+write.table(holdtbl, paste0('Setup_Reupload', Round, '.csv'), sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), paste0('Setup_Reupload', Round, '.csv'), append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+#-------------------------------------------------------------------------------
+```
+
+
+
+
+### Chunk 19: Generate/Display final payoffs
+
+```{r Chunk 19}
+# Generate payment file
+Pays_info<- select(signup, 1:5)
+Pays <- full_join(Pays_info, holdtbl[, c('email', 'cash__initial')])
+Pays['cash__initial'] <- Pays['cash__initial']/100
+names(Pays)[6]<- c('Payoffs')
+write.xlsx(Pays, 'Payment.xlsx', row.names = FALSE)
+
+# Replace the TRUE by FALSE
+tvec<- rep("FALSE", dim(holdtbl)[1])
+holdtbl[ , grep('buy', names(holdtbl))]<- tvec
+holdtbl[ , grep('sell', names(holdtbl))]<- tvec
+
+file.remove('finalin.csv')
+file.copy('finalin_empty.csv', 'finalin.csv')
+write.table(holdtbl, 'finalin.csv', sep = ',', append = TRUE, quote = FALSE, row.names = FALSE)
+write.table(('# holdings -- end,,,,,,,,,,,,,,,,,'), 'finalin.csv', append = TRUE, quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Load the updated setup file
+marketin<- 'finalin.csv'
+myp<- POST(paste0(hero, '/holdings/uploads'), config = login, body = list(file = upload_file(marketin)), encode = 'multipart')
+
+yy<- PATCH(paste0(hero,'/open'), config = login)
+```
+
+### Final chunk to close payoff showing
+```{r Final}
+yy<- PATCH(paste0(hero,'/close'), config = login)
+#write.csv(ttracker, 'TrackerInfo.csv', row.names = FALSE)
+```
+
+
+
+
+
+
+

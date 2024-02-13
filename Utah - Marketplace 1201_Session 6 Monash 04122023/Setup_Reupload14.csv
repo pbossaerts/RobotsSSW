@@ -1,0 +1,21 @@
+# orders -- begin,,,,,,,,,,,,,,,,,
+account,email,owner,marketplace,session,market,target,order,original,supplier,consumer,type,side,units,price,createdDate,lastModifiedDate,clientDescription
+# orders -- end,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,
+,,,,,,,,,,,,,,,,,
+# holdings -- begin,,,,,,,,,,,,,,,,,
+account,email,owner,marketplace,session,name,cash,cash__initial,STOCK_2146,STOCK_2146__initial,STOCK_2146__shorts,STOCK_2146__buy,STOCK_2146__sell
+uleef,M01@utah.edu,36024,1201,113626,T003,36625,36625,0,0,0,true,true
+uleef,M02@utah.edu,36025,1201,113626,T009,19330,19330,0,0,0,true,true
+uleef,M03@utah.edu,36026,1201,113626,T000,215,7090,55,55,0,true,true
+uleef,M04@utah.edu,36027,1201,113626,T008,28155,28280,1,1,0,true,true
+uleef,M05@utah.edu,36028,1201,113626,T006,4840,9090,34,34,0,true,true
+uleef,M06@utah.edu,36029,1201,113626,T007,18080,18705,5,5,0,true,true
+uleef,M07@utah.edu,36030,1201,113626,T005,34505,34505,0,0,0,true,true
+uleef,M08@utah.edu,36031,1201,113626,T002,19850,23975,33,33,0,true,true
+uleef,M09@utah.edu,36032,1201,113626,T004,19000,21500,20,20,0,true,true
+uleef,M10@utah.edu,36033,1201,113626,T010,21400,22900,12,12,0,true,true
+uleef,M11@utah.edu,36034,1201,113626,T011,19000,21500,20,20,0,true,true
+uleef,M12@utah.edu,36035,1201,113626,T001,21400,22900,12,12,0,true,true
+# holdings -- end,,,,,,,,,,,,,,,,,

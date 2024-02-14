@@ -22,3 +22,7 @@ Files included in each folders are:
 - Holdings_R*: initial and end holdings of each period per subject
 - Orders_R8: orders happened in each period per subject
 - Setup_Reupload*: holdings with cash updated by adding the random dividends of each period
+
+*************************************************
+
+The file "Profits (in cents) SNr 1-9.xlsx" contains the ex-ante & ex-post profits computed based on the realized dividends per period for the 9 Utah sessions. For any dividend information from the Utah sessions, please refer to this file.
